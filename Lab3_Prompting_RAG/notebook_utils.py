@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
 
 
 @dataclass(frozen=True)
@@ -185,6 +185,12 @@ def sample_consensus(model, prompt, n=3, temperature=0.8):
             "votes": dict(votes), "samples": rows}
 
 
+def check_word_limit(text: str, max_words: int = 120) -> dict:
+    """Deterministic length check: the model is asked for <= max_words, Python verifies it."""
+    words = len(re.findall(r"\S+", text))
+    return {"words": words, "max_words": max_words, "within_limit": words <= max_words}
+
+
 def prompt_chain(model, article, *, revise=False):
     results = {}
     results["extract"] = model.generate(f"Extract three key points from this text:\n{article}").text
@@ -197,6 +203,8 @@ def prompt_chain(model, article, *, revise=False):
         results["revision"] = model.generate(
             f"Revise the draft in at most 120 words using the critique, preserving source accuracy.\n"
             f"Source:\n{article}\nDraft:\n{results['synthesize']}\nCritique:\n{results['critique']}").text
+        results["length_check"] = {"synthesize": check_word_limit(results["synthesize"]),
+                                   "revision": check_word_limit(results["revision"])}
     return results
 
 
@@ -206,6 +214,20 @@ class KPIReport(BaseModel):
     value: FiniteFloat
     unit: str
     interpretation: str
+
+
+class SupportTicket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category: Literal["bug", "billing", "account_access", "feature_request", "other"]
+    priority: Literal["low", "medium", "high", "urgent"]
+    summary: str = Field(min_length=10, max_length=200)
+
+    @field_validator("summary")
+    @classmethod
+    def single_sentence(cls, value: str) -> str:
+        if re.search(r"[.!?]\s+[A-Z]", value.strip()):
+            raise ValueError("summary must be a single sentence")
+        return value
 
 
 class GuardrailError(ValueError):
@@ -218,11 +240,18 @@ class Guardrails:
     max_output_chars: int = 4000
     max_steps: int = 5
     max_tool_calls: int = 6
-    allowed_tools: tuple[str, ...] = ("lookup_fact", "calculator")
+    allowed_tools: tuple[str, ...] = ("lookup_fact", "calculator", "convert_minutes_to_hours")
+    allowed_fact_keys: tuple[str, ...] | None = None  # None keeps every registered fact readable
 
     def __post_init__(self):
         if min(self.max_input_chars, self.max_output_chars, self.max_steps, self.max_tool_calls) < 1:
             raise ValueError("All guardrail limits must be positive")
+
+    def check_tool_arguments(self, name: str, arguments: dict) -> None:
+        """Pre-execution check on validated arguments: lookup_fact may only read approved keys."""
+        if name == "lookup_fact" and self.allowed_fact_keys is not None:
+            if arguments["key"] not in self.allowed_fact_keys:
+                raise GuardrailError(f"Fact key {arguments['key']!r} is not in the approved list")
 
     def check_input(self, text):
         if not isinstance(text, str) or not text.strip():
@@ -249,6 +278,11 @@ class CalculatorArgs(BaseModel):
     a: FiniteFloat = Field(ge=-1_000_000, le=1_000_000)
     b: FiniteFloat = Field(ge=-1_000_000, le=1_000_000)
     op: Literal["add", "subtract", "multiply", "divide"]
+
+
+class MinutesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    minutes: FiniteFloat = Field(ge=0, le=100_000)
 
 
 FACTS = {
@@ -280,6 +314,11 @@ def calculator(a, b, op):
     raise ValueError("Unknown calculator operation")
 
 
+def convert_minutes_to_hours(minutes):
+    """Convert a bounded, non-negative duration in minutes to hours."""
+    return minutes / 60
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -292,11 +331,17 @@ class ToolSpec:
                 "parameters": self.arguments.model_json_schema()}
 
 
-def teaching_tools():
-    return {
+def teaching_tools(*, extended: bool = False):
+    """extended=True also registers convert_minutes_to_hours; the default keeps the ReAct schema in sync."""
+    tools = {
         "lookup_fact": ToolSpec("lookup_fact", "Read a fictional workshop fact. Keys: " + ", ".join(FACTS), LookupArgs, lookup_fact),
         "calculator": ToolSpec("calculator", "Add, subtract, multiply or divide two bounded numbers", CalculatorArgs, calculator),
     }
+    if extended:
+        tools["convert_minutes_to_hours"] = ToolSpec(
+            "convert_minutes_to_hours", "Convert a duration in minutes (0 to 100000) to hours",
+            MinutesArgs, convert_minutes_to_hours)
+    return tools
 
 
 def dispatch_tool(name, arguments, tools, guardrails):
@@ -305,6 +350,7 @@ def dispatch_tool(name, arguments, tools, guardrails):
         return {"ok": False, "blocked": True, "error": "Tool is not in the allowed registry"}
     try:
         validated = tools[name].arguments.model_validate(arguments)
+        guardrails.check_tool_arguments(name, validated.model_dump())
         value = tools[name].function(**validated.model_dump())
         return {"ok": True, "result": value}
     except (ValueError, TypeError, OverflowError) as exc:
