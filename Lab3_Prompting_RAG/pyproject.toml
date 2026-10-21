@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lab5-prompting-rag-notebooks"
+version = "0.1.0"
+description = "Student prompt-engineering and RAG notebooks for Ollama or Vertex AI"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+  "python-dotenv>=1,<2",
+  "pydantic>=2.9,<3",
+  "numpy>=1.26,<3",
+  "pandas>=2,<4",
+  "requests>=2.31,<3",
+  "pypdf>=5,<7",
+  "langchain-core>=1,<2",
+  "langchain-community>=0.4,<0.5",
+  "langchain-text-splitters>=1,<2",
+  "faiss-cpu>=1.9,<2",
+  "jupyterlab>=4,<5",
+  "ipykernel>=6,<8",
+  "ipython>=8,<10",
+]
+
+[project.optional-dependencies]
+ollama = ["ollama>=0.6,<1"]
+vertex = ["google-genai>=1.75,<2"]
+all = ["ollama>=0.6,<1", "google-genai>=1.75,<2"]
+test = ["nbformat>=5,<6"]
+
+[tool.setuptools]
+py-modules = ["notebook_utils"]

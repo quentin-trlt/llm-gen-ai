@@ -1,0 +1,35 @@
+name: lab5-prompting-rag
+services:
+  ollama:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  pull-models:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    profiles: ["setup"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: "http://ollama:11434"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3:0.6b}"
+      OLLAMA_EMBED_MODEL: "${OLLAMA_EMBED_MODEL:-all-minilm}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'ollama pull "$${OLLAMA_MODEL}" && ollama pull "$${OLLAMA_EMBED_MODEL}"'
+    restart: "no"
+
+volumes:
+  ollama_models:

@@ -1,0 +1,4 @@
+# Optional override for a configured NVIDIA GPU host; not for macOS Docker Desktop.
+services:
+  ollama:
+    gpus: all
